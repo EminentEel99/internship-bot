@@ -481,7 +481,11 @@ def render(listings, truncated=0):
         if item["date_posted"]:
             posted = datetime.fromtimestamp(
                 item["date_posted"], timezone.utc).astimezone().strftime("%b %d, %-I:%M %p")
-        loc = ", ".join(item["locations"]) or "Location not listed"
+        # US offices first — for a req posted across offices, the one that
+        # matters to you should not be buried behind Dubai.
+        ordered = sorted(item["locations"],
+                         key=lambda p: not is_us_location([p]))
+        loc = ", ".join(ordered) or "Location not listed"
         meta = " · ".join(x for x in [loc, item["category"], posted] if x)
 
         text.append(f"{item['company']} — {item['title']}")
@@ -521,7 +525,8 @@ def render(listings, truncated=0):
     {''.join(rows)}
     <tr><td>{note}</td></tr>
     <tr><td style="padding:14px 16px;font:400 11.5px/1.5 sans-serif;color:#999;">
-      Sourced from the SimplifyJobs and vanshb03 Summer 2027 internship repos.
+      US Summer 2027 internships, from the SimplifyJobs and vanshb03 repos plus
+      21 company job boards polled directly.
     </td></tr>
   </table></body></html>"""
     return "\n".join(text), html

@@ -28,6 +28,9 @@ jobs:
   watch:
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    # Runners are UTC; without this every timestamp in the email reads hours off.
+    env:
+      TZ: America/New_York
     steps:
       - uses: actions/checkout@v4
 
