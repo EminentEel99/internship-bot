@@ -142,6 +142,51 @@ US_ALIASES = {
     "cupertino", "redmond", "bellevue", "pittsburgh", "ann arbor",
 }
 
+# Recognisable employers, for the --digest-notable one-off. Substring match on
+# company name, so "meta" also catches "Meta Platforms".
+NOTABLE_COMPANIES = [
+    # big tech / consumer
+    "apple", "microsoft", "google", "alphabet", "meta", "amazon", "nvidia",
+    "tiktok", "bytedance", "netflix", "adobe", "salesforce", "oracle", "ibm",
+    "intel", "qualcomm", "cisco", "uber", "lyft", "airbnb", "doordash",
+    "instacart", "stripe", "snap", "pinterest", "reddit", "discord", "dropbox",
+    "spotify", "twilio", "zoom", "atlassian", "shopify", "squarespace",
+    "godaddy", "workday", "servicenow", "vmware", "dell", "broadcom", "amd",
+    "micron", "texas instruments", "applied materials", "western digital",
+    "seagate", "arista", "juniper", "akamai", "cloudflare", "datadog",
+    "mongodb", "elastic", "hashicorp", "gitlab", "github", "atlassian",
+    "ebay", "paypal", "block", "intuit", "expedia", "booking", "yelp", "zillow",
+    "roblox", "unity", "electronic arts", "activision", "epic games", "riot games",
+    # ai labs / infra
+    "openai", "anthropic", "scale ai", "databricks", "snowflake", "perplexity",
+    "cursor", "anysphere", "mistral", "cohere", "figma", "notion", "vercel",
+    "etched", "sierra", "sambanova", "cerebras", "groq",
+    # aerospace / defense / industrial
+    "spacex", "boeing", "lockheed", "northrop", "rtx", "raytheon",
+    "blue origin", "anduril", "airbus", "general dynamics", "l3harris",
+    "honeywell", "collins aerospace", "ge vernova", "ge appliances",
+    "general electric", "siemens", "bosch", "medtronic", "johnson & johnson",
+    "3m", "caterpillar", "john deere", "tesla", "rivian", "lucid",
+    # quant / finance
+    "jane street", "citadel", "two sigma", "hudson river", "jump trading",
+    "drw", "optiver", "imc", "susquehanna", "akuna", "virtu", "flow traders",
+    "tower research", "marshall wace", "arrowstreet", "point72", "millennium",
+    "de shaw", "d. e. shaw", "belvedere", "chicago trading", "jp morgan",
+    "jpmorgan", "goldman", "morgan stanley", "capital one", "blackrock",
+    "fidelity", "walleye", "quantbot", "five rings", "old mission",
+    "wolverine trading", "peak6", "headlands", "xtx", "qube", "squarepoint",
+    "balyasny", "schonfeld", "verition", "aquatic", "voloridge", "trexquant",
+    "american express", "visa", "mastercard", "bank of america", "citi",
+    "wells fargo", "deutsche bank", "barclays", "ubs", "nomura", "jefferies",
+    "castleton", "trillium", "dv trading", "maven securities", "tradeweb",
+    # large employers that are not household tech names but are far from small
+    "palantir", "appian", "veeam", "northwestern mutual", "vertiv", "uline",
+    "marmon", "ameren", "lpl financial", "royal bank of canada", "cigna",
+    "unitedhealth", "cvs", "walmart", "target", "costco", "nike", "disney",
+    "comcast", "verizon", "at&t", "t-mobile", "charles schwab", "state farm",
+    "progressive", "geico", "usaa", "liberty mutual", "travelers",
+]
+
 TARGET_TERM = "summer 2027"
 MAX_LISTINGS_PER_EMAIL = 60
 # One email per listing, so nothing hides inside a digest. Above this many in a
@@ -595,6 +640,71 @@ def deliver(tagged_messages):
     return sent
 
 
+def render_grouped(listings):
+    """Compact company-grouped layout for the big one-off roundup.
+
+    The per-listing card used for alerts would run ~130KB across 200+ roles,
+    which Outlook and Gmail both clip. One line per role, grouped under the
+    company, keeps a full roundup inside the size limit and readable.
+    """
+    by_company = {}
+    for item in listings:
+        by_company.setdefault(item["company"], []).append(item)
+    order = sorted(by_company, key=lambda c: (-len(by_company[c]), c.lower()))
+    when = datetime.now(timezone.utc).astimezone().strftime("%b %d, %Y at %-I:%M %p")
+
+    text, blocks = [], []
+    for company in order:
+        rows = sorted(by_company[company], key=lambda x: x["date_posted"], reverse=True)
+        text.append(f"{company} ({len(rows)})")
+        lines = []
+        for item in rows:
+            ordered = sorted(item["locations"], key=lambda p: not is_us_location([p]))
+            loc = ", ".join(ordered[:2]) or "Location not listed"
+            text.append(f"  - {item['title']}  [{loc}]")
+            text.append(f"    {item['url']}")
+            # Font/colour live on the parent <td>; repeating them per line
+            # added ~23KB across a roundup this size and pushed it past the
+            # point where Gmail clips the message.
+            lines.append(
+                f'<div style="margin:0 0 5px"><a href="{esc(item["url"])}"'
+                f' style="color:#0b5fff">{esc(item["title"])}</a>'
+                f'<span style="color:#888"> · {esc(loc)}</span></div>')
+        text.append("")
+        blocks.append(f"""
+      <tr><td style="padding:12px 16px;border-bottom:1px solid #e6e6e6;
+                     font:400 13.5px/1.45 -apple-system,BlinkMacSystemFont,sans-serif">
+        <div style="font-weight:600;font-size:14px;color:#111;margin-bottom:7px">
+          {esc(company)} <span style="color:#999;font-weight:400">({len(rows)})</span>
+        </div>
+        {''.join(lines)}
+      </td></tr>""")
+
+    html = f"""<!doctype html><html><body style="margin:0;background:#f5f5f7;padding:20px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+         style="max-width:680px;margin:0 auto;background:#fff;border-radius:10px;overflow:hidden;">
+    <tr><td style="padding:18px 16px 12px;border-bottom:2px solid #111;">
+      <div style="font:700 17px/1.3 -apple-system,BlinkMacSystemFont,sans-serif;color:#111;">
+        {len(listings)} open Summer 2027 internships at {len(order)} notable companies
+      </div>
+      <div style="font:400 12.5px/1.4 sans-serif;color:#777;margin-top:3px;">
+        One-off roundup · {esc(when)}
+      </div>
+    </td></tr>
+    {''.join(blocks)}
+    <tr><td style="padding:14px 16px;font:400 11.5px/1.5 sans-serif;color:#999;">
+      Everything currently open, not just new postings. From here on you get one
+      email per role as it appears.
+    </td></tr>
+  </table></body></html>"""
+    return "\n".join(text), html
+
+
+def is_notable(company):
+    low = company.lower()
+    return any(key in low for key in NOTABLE_COMPANIES)
+
+
 def send(subject, text_body, html_body):
     user, _, to_addr = credentials()
     deliver([("one", build_message(subject, text_body, html_body, user, to_addr))])
@@ -607,6 +717,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--seed", action="store_true")
     ap.add_argument("--test-email", action="store_true")
+    ap.add_argument("--digest-notable", action="store_true",
+                    help="one-off roundup of every open role at a notable "
+                         "company; does not change state")
     ap.add_argument("--digest", type=int, default=0, metavar="N",
                     help="email a snapshot of the N newest current listings, "
                          "seen or not, without changing state")
@@ -628,6 +741,16 @@ def main():
         return 0
     if not current:
         print("No listings matched the filters. Not touching state.")
+        return 0
+
+    if args.digest_notable:
+        picks = [i for i in current.values() if is_notable(i["company"])]
+        companies = len({i["company"] for i in picks})
+        text_body, html_body = render_grouped(picks)
+        send(f"Summer 2027 roundup — {len(picks)} open internships at "
+             f"{companies} big-name companies", text_body, html_body)
+        print(f"Sent roundup: {len(picks)} listings, {companies} companies. "
+              f"State untouched.")
         return 0
 
     if args.digest:

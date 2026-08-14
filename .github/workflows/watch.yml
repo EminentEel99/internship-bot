@@ -10,7 +10,7 @@ on:
         description: "normal · test-email · dry-run · digest (snapshot of 25 newest)"
         type: choice
         default: normal
-        options: [normal, test-email, dry-run, digest]
+        options: [normal, test-email, dry-run, digest, roundup]
       count:
         description: "how many listings the digest mode should include"
         type: string
@@ -50,6 +50,7 @@ jobs:
             test-email) python3 bot.py --test-email ;;
             dry-run)    python3 bot.py --dry-run ;;
             digest)     python3 bot.py --digest "$COUNT" ;;
+            roundup)    python3 bot.py --digest-notable ;;
             *)          python3 bot.py ;;
           esac
 
