@@ -98,7 +98,15 @@ def fetch_json(url, attempts=3):
     last = None
     for i in range(attempts):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            # raw.githubusercontent serves with max-age=300, so a plain GET can
+            # hand back a CDN copy up to 5 minutes stale. A throwaway query
+            # param plus no-cache headers pulls the current file instead.
+            bust = f"{url}{'&' if '?' in url else '?'}cb={int(time.time())}"
+            req = urllib.request.Request(bust, headers={
+                "User-Agent": USER_AGENT,
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+            })
             with urllib.request.urlopen(req, timeout=45) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as exc:  # network flake, GitHub hiccup, bad JSON
@@ -117,15 +125,28 @@ def listing_key(company, title, url):
     return f"{company.strip().lower()}|{title.strip().lower()}"
 
 
-def is_summer_2027(raw):
-    """Simplify uses a `terms` list; vanshb03 uses a bare `season` string."""
-    terms = raw.get("terms")
-    if isinstance(terms, list) and terms:
-        return any(TARGET_TERM == str(t).strip().lower() for t in terms)
-    season = raw.get("season")
+def is_summer_2027(raw, title):
+    """Simplify uses a `terms` list; vanshb03 uses a bare `season` string.
+
+    A plain `terms == ["Summer 2027"]` check is the happy path, but a chunk of
+    Simplify's listings are tagged "N/A" or left empty — and a big company
+    dropping its summer reqs unexpectedly is exactly the case worth not
+    missing. So fall back to reading the title/url when the tag is useless.
+    """
+    terms = [str(t).strip().lower() for t in (raw.get("terms") or [])]
+    if any(t == TARGET_TERM for t in terms):
+        return True
+
+    season = str(raw.get("season") or "").strip().lower()
     if season:
-        # Repo is scoped to the 2027 cycle, so a bare "Summer" means Summer 2027.
-        return str(season).strip().lower() == "summer"
+        # vanshb03's repo is scoped to the 2027 cycle: bare "Summer" means 2027.
+        return season == "summer"
+
+    untagged = not terms or all(t in ("n/a", "", "none") for t in terms)
+    if untagged:
+        haystack = f"{title} {raw.get('url') or ''}".lower()
+        if "2027" in haystack and not re.search(r"\b(2026|2028)\b", title):
+            return True
     return False
 
 
@@ -146,7 +167,7 @@ def normalise(raw, source_name):
     url = str(raw.get("url") or "").strip()
     if not title or not company or not url:
         return None
-    if not is_summer_2027(raw):
+    if not is_summer_2027(raw, title):
         return None
     if not is_swe(raw, title):
         return None
