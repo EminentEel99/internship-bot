@@ -32,9 +32,15 @@ emailed, so nothing is ever sent twice.
 ```bash
 python3 bot.py --dry-run      # show what it would email, change nothing
 python3 bot.py --test-email   # prove the SMTP credentials work
+python3 bot.py --digest 25    # snapshot of the 25 newest, ignores seen state
 python3 bot.py --seed         # mark everything currently listed as already seen
 python3 bot.py                # real run
 ```
+
+One new listing means one email, so nothing gets buried inside a digest. If a
+single run turns up more than `BURST_THRESHOLD` (12) at once — a company
+dropping its whole req list in one go — those collapse into a single digest
+rather than 40 separate messages.
 
 Local runs need the same three values in the environment:
 

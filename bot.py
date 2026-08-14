@@ -144,6 +144,10 @@ US_ALIASES = {
 
 TARGET_TERM = "summer 2027"
 MAX_LISTINGS_PER_EMAIL = 60
+# One email per listing, so nothing hides inside a digest. Above this many in a
+# single run the postings clearly went up as one drop, and separate emails would
+# just be a mailbomb — those collapse into one digest instead.
+BURST_THRESHOLD = 12
 STATE_RETENTION_DAYS = 240
 USER_AGENT = "internship-watcher/1.0 (+personal job alert bot)"
 
@@ -523,13 +527,16 @@ def render(listings, truncated=0):
     return "\n".join(text), html
 
 
-def send(subject, text_body, html_body):
+def credentials():
     user = os.environ.get("SMTP_USER", "").strip()
     password = os.environ.get("SMTP_PASS", "").replace(" ", "").strip()
     to_addr = os.environ.get("MAIL_TO", "").strip()
     if not (user and password and to_addr):
         raise SystemExit("SMTP_USER, SMTP_PASS and MAIL_TO must all be set.")
+    return user, password, to_addr
 
+
+def build_message(subject, text_body, html_body, user, to_addr):
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = f"Internship Bot <{user}>"
@@ -537,16 +544,32 @@ def send(subject, text_body, html_body):
     msg["Date"] = formatdate(localtime=True)
     msg.set_content(text_body)
     msg.add_alternative(html_body, subtype="html")
+    return msg
 
-    last = None
+
+def deliver(tagged_messages):
+    """Send a batch of messages over one SMTP session.
+
+    Returns the set of tags that actually went out. Tracking them individually
+    matters: if the connection dies halfway through, only the delivered ones
+    get marked seen, so the rest are retried on the next run instead of being
+    silently lost.
+    """
+    user, password, to_addr = credentials()
+    sent, last = set(), None
+
     for attempt in range(3):
+        pending = [(t, m) for t, m in tagged_messages if t not in sent]
+        if not pending:
+            break
         try:
             ctx = ssl.create_default_context()
             with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx, timeout=45) as s:
                 s.login(user, password)
-                s.send_message(msg)
-            print(f"  ✓ emailed {to_addr}")
-            return
+                for tag, msg in pending:
+                    s.send_message(msg)
+                    sent.add(tag)
+            break
         except smtplib.SMTPAuthenticationError:
             raise SystemExit(
                 "Gmail rejected the login. Check that SMTP_PASS is a 16-character "
@@ -557,7 +580,19 @@ def send(subject, text_body, html_body):
             last = exc
             if attempt < 2:
                 time.sleep(5 * (attempt + 1))
-    raise SystemExit(f"Could not send mail after 3 attempts: {last}")
+
+    if len(sent) < len(tagged_messages):
+        print(f"  ! only {len(sent)}/{len(tagged_messages)} sent; "
+              f"the rest retry next run ({last})", file=sys.stderr)
+    elif sent:
+        print(f"  ✓ emailed {to_addr} ({len(sent)} message"
+              f"{'s' if len(sent) != 1 else ''})")
+    return sent
+
+
+def send(subject, text_body, html_body):
+    user, _, to_addr = credentials()
+    deliver([("one", build_message(subject, text_body, html_body, user, to_addr))])
 
 
 # --------------------------------------------------------------------------
@@ -567,6 +602,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--seed", action="store_true")
     ap.add_argument("--test-email", action="store_true")
+    ap.add_argument("--digest", type=int, default=0, metavar="N",
+                    help="email a snapshot of the N newest current listings, "
+                         "seen or not, without changing state")
     args = ap.parse_args()
 
     if args.test_email:
@@ -585,6 +623,16 @@ def main():
         return 0
     if not current:
         print("No listings matched the filters. Not touching state.")
+        return 0
+
+    if args.digest:
+        newest = sorted(current.values(),
+                        key=lambda x: x["date_posted"], reverse=True)[:args.digest]
+        text_body, html_body = render(newest, 0)
+        subject = (f"Summer 2027 SWE internships — {len(newest)} most recent "
+                   f"of {len(current)} open")
+        send(subject, text_body, html_body)
+        print(f"Sent a {len(newest)}-listing snapshot. State untouched.")
         return 0
 
     state = load_state()
@@ -607,23 +655,53 @@ def main():
         return 0
 
     fresh.sort(key=lambda x: x["date_posted"], reverse=True)
-    truncated = max(0, len(fresh) - MAX_LISTINGS_PER_EMAIL)
-    shown = fresh[:MAX_LISTINGS_PER_EMAIL]
-
-    subject = build_subject(shown)
-    text_body, html_body = render(shown, truncated)
+    burst = len(fresh) > BURST_THRESHOLD
 
     if args.dry_run:
-        print(f"\n--- DRY RUN: would send ---\nSubject: {subject}\n")
-        print(text_body)
+        if burst:
+            print(f"\n--- DRY RUN: one digest ({len(fresh)} listings, over the "
+                  f"{BURST_THRESHOLD} threshold) ---")
+            print(f"Subject: {build_subject(fresh[:MAX_LISTINGS_PER_EMAIL])}")
+        else:
+            print(f"\n--- DRY RUN: {len(fresh)} separate email(s) ---")
+            for item in fresh:
+                print(f"Subject: {item['company']} — {item['title']}")
         print("--- state not modified ---")
         return 0
 
-    send(subject, text_body, html_body)
-    for item in fresh:
+    user, _, to_addr = credentials()
+    messages = []
+    if burst:
+        truncated = max(0, len(fresh) - MAX_LISTINGS_PER_EMAIL)
+        shown = fresh[:MAX_LISTINGS_PER_EMAIL]
+        text_body, html_body = render(shown, truncated)
+        messages.append(("__digest__", build_message(
+            build_subject(shown), text_body, html_body, user, to_addr)))
+        print(f"{len(fresh)} new at once — sending one digest.")
+    else:
+        for item in fresh:
+            text_body, html_body = render([item], 0)
+            subject = f"{item['company']} — {item['title']}"
+            messages.append((item["key"], build_message(
+                subject, text_body, html_body, user, to_addr)))
+        print(f"Sending {len(fresh)} separate email(s).")
+
+    delivered = deliver(messages)
+
+    if burst:
+        if "__digest__" not in delivered:
+            print("Digest failed to send; state untouched so it retries.")
+            return 1
+        recorded = fresh
+    else:
+        recorded = [i for i in fresh if i["key"] in delivered]
+
+    if not recorded:
+        return 1
+    for item in recorded:
         state["seen"][item["key"]] = now
     save_state(state)
-    print(f"Recorded {len(fresh)} new listing(s).")
+    print(f"Recorded {len(recorded)} new listing(s).")
     return 0
 
 

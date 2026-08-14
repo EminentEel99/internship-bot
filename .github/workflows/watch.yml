@@ -7,10 +7,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "normal = real run · test-email = prove mail works · dry-run = log only"
+        description: "normal · test-email · dry-run · digest (snapshot of 25 newest)"
         type: choice
         default: normal
-        options: [normal, test-email, dry-run]
+        options: [normal, test-email, dry-run, digest]
 
 permissions:
   contents: write
@@ -41,6 +41,7 @@ jobs:
           case "$MODE" in
             test-email) python3 bot.py --test-email ;;
             dry-run)    python3 bot.py --dry-run ;;
+            digest)     python3 bot.py --digest 25 ;;
             *)          python3 bot.py ;;
           esac
 
