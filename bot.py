@@ -64,7 +64,7 @@ GREENHOUSE_BOARDS = {
     "figma": "Figma", "airbnb": "Airbnb", "coinbase": "Coinbase",
     "robinhood": "Robinhood", "instacart": "Instacart", "scaleai": "Scale AI",
     "discord": "Discord", "reddit": "Reddit", "dropbox": "Dropbox",
-    "cloudflare": "Cloudflare",
+    "cloudflare": "Cloudflare", "spacex": "SpaceX",
 }
 ASHBY_BOARDS = {
     "openai": "OpenAI", "ramp": "Ramp", "linear": "Linear", "notion": "Notion",
