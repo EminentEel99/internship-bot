@@ -1,0 +1,51 @@
+name: internship-watch
+
+on:
+  schedule:
+    # Every 5 minutes — the fastest cadence GitHub Actions allows.
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+# Never let two runs race on state.json.
+concurrency:
+  group: internship-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check for new listings and email them
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python3 bot.py
+
+      - name: Persist state
+        run: |
+          if git diff --quiet -- state.json; then
+            echo "state.json unchanged — nothing to commit"
+            exit 0
+          fi
+          git config user.name  "internship-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git commit -m "state: record newly seen listings [skip ci]"
+          # Another run may have pushed while we worked; rebase and retry.
+          for i in 1 2 3; do
+            if git push; then exit 0; fi
+            sleep 5
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+          done
+          echo "::warning::could not push state.json; next run will re-send these"
