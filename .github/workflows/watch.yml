@@ -11,6 +11,10 @@ on:
         type: choice
         default: normal
         options: [normal, test-email, dry-run, digest]
+      count:
+        description: "how many listings the digest mode should include"
+        type: string
+        default: "25"
 
 permissions:
   contents: write
@@ -37,11 +41,12 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
           MODE: ${{ inputs.mode || 'normal' }}
+          COUNT: ${{ inputs.count || '25' }}
         run: |
           case "$MODE" in
             test-email) python3 bot.py --test-email ;;
             dry-run)    python3 bot.py --dry-run ;;
-            digest)     python3 bot.py --digest 25 ;;
+            digest)     python3 bot.py --digest "$COUNT" ;;
             *)          python3 bot.py ;;
           esac
 
