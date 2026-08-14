@@ -54,6 +54,24 @@ SOURCES = [
     },
 ]
 
+# Companies polled straight from their own applicant-tracking system, so we see
+# a posting the moment it goes live rather than waiting for an aggregator to
+# notice it. Only Greenhouse and Ashby are here because both expose a stable,
+# unauthenticated JSON board API. Microsoft, Apple, Google and Meta run bespoke
+# job sites with no such endpoint — those still come via Simplify only.
+GREENHOUSE_BOARDS = {
+    "anthropic": "Anthropic", "stripe": "Stripe", "databricks": "Databricks",
+    "figma": "Figma", "airbnb": "Airbnb", "coinbase": "Coinbase",
+    "robinhood": "Robinhood", "instacart": "Instacart", "scaleai": "Scale AI",
+    "discord": "Discord", "reddit": "Reddit", "dropbox": "Dropbox",
+    "cloudflare": "Cloudflare",
+}
+ASHBY_BOARDS = {
+    "openai": "OpenAI", "ramp": "Ramp", "linear": "Linear", "notion": "Notion",
+    "vercel": "Vercel", "perplexity": "Perplexity", "cursor": "Cursor",
+    "sierra": "Sierra",
+}
+
 # Simplify tags each listing with a category. These are the ones we care about.
 SWE_CATEGORIES = {
     "software",
@@ -72,15 +90,38 @@ TITLE_INCLUDE = re.compile(
     r"data scien|data engineer|research scientist|quant|trading|"
     r"backend|back-end|frontend|front-end|full[ -]?stack|mobile|ios|android|"
     r"infrastructure|platform|systems|embedded|firmware|robotics|security|"
-    r"cyber|devops|\bsre\b|cloud|compiler|graphics|silicon|asic|fpga|chip)\b",
+    r"cyber|devops|\bsre\b|cloud|compiler|graphics|silicon|asic|fpga|chip|"
+    r"analytic)\b",
     re.I,
 )
+
+# Simplify's "AI/ML/Data" bucket is a catch-all and drags in things like
+# "Operations Intern". Only these categories are trusted on their own; anything
+# tagged AI/ML/Data still has to look technical in the title.
+STRONG_CATEGORIES = {"software", "software engineering", "quant", "hardware",
+                     "hardware engineering"}
 
 # Things Simplify sometimes files under AI/ML/Data that aren't remotely SWE.
 TITLE_EXCLUDE = re.compile(
     r"\b(sales|marketing|recruit|talent acquisition|human resources|\bhr\b|"
     r"accounting|audit|payroll|paralegal|legal|communications|public relations|"
-    r"brand|content creator|social media|merchandis|customer success)\b",
+    r"brand|content creator|social media|merchandis|customer success|"
+    # campus work-study postings, not industry internships
+    r"student worker|work[- ]study|\bfws\b|student assistant|resident assistant)\b",
+    re.I,
+)
+
+# Must actually be an internship / co-op, not a full-time or new-grad req.
+INTERNSHIP_TITLE = re.compile(
+    r"\b(intern|interns|internship|co-?op|apprentice|apprenticeship|"
+    r"placement|summer analyst|summer associate|trainee|student)\b",
+    re.I,
+)
+
+# Explicitly *not* for someone still working on a bachelor's.
+NOT_UNDERGRAD = re.compile(
+    r"\b(ph\.?\s?d|doctoral|doctorate|postdoc|post-doc|\bmba\b|new ?grad|"
+    r"graduate program|full[- ]time|experienced hire)\b",
     re.I,
 )
 
@@ -153,10 +194,28 @@ def is_summer_2027(raw, title):
 def is_swe(raw, title):
     if TITLE_EXCLUDE.search(title):
         return False
-    category = str(raw.get("category") or "").strip().lower()
-    if category:
-        return category in SWE_CATEGORIES or bool(TITLE_INCLUDE.search(title))
-    return bool(TITLE_INCLUDE.search(title))
+    if TITLE_INCLUDE.search(title):
+        return True
+    # No technical signal in the title — only trust an unambiguous category.
+    return str(raw.get("category") or "").strip().lower() in STRONG_CATEGORIES
+
+
+def is_for_current_undergrad(raw, title):
+    """Internship-shaped, and open to someone partway through a bachelor's.
+
+    Simplify carries a `degrees` list. When it's populated and Bachelor's isn't
+    in it, the role is genuinely closed to an undergrad (42 of the current
+    Summer 2027 roles are PhD-only) — drop those rather than pad the inbox.
+    An empty list means unknown, which we let through.
+    """
+    if not INTERNSHIP_TITLE.search(title):
+        return False
+    if NOT_UNDERGRAD.search(title):
+        return False
+    degrees = [str(x).strip().lower() for x in (raw.get("degrees") or [])]
+    if degrees and not any("bachelor" in d for d in degrees):
+        return False
+    return True
 
 
 def normalise(raw, source_name):
@@ -170,6 +229,8 @@ def normalise(raw, source_name):
     if not is_summer_2027(raw, title):
         return None
     if not is_swe(raw, title):
+        return None
+    if not is_for_current_undergrad(raw, title):
         return None
 
     locs = raw.get("locations") or []
@@ -186,6 +247,89 @@ def normalise(raw, source_name):
         "date_posted": int(raw.get("date_posted") or 0),
         "source": source_name,
     }
+
+
+def board_listing(company, title, url, posted, location):
+    """Shared filter + shape for a role read straight off a company's own board.
+
+    These boards have no season metadata, so the term test is inference: an
+    internship posted now, without a competing year in the title, is the
+    upcoming summer. Deliberately loose — this list is ~20 companies, so a
+    stray alert costs far less than missing the drop we set this up for.
+    """
+    if not INTERNSHIP_TITLE.search(title) or NOT_UNDERGRAD.search(title):
+        return None
+    if TITLE_EXCLUDE.search(title) or not TITLE_INCLUDE.search(title):
+        return None
+    if re.search(r"\b(2026|2028|2029)\b", title):
+        return None
+    # Boards label off-cycle terms in the title; we only want the summer one.
+    if re.search(r"\b(fall|winter|spring|autumn)\b", title, re.I):
+        return None
+    return {
+        "key": listing_key(company, title, url),
+        "company": company,
+        "title": title,
+        "url": url,
+        "locations": [location] if location else [],
+        "category": "Direct from company board",
+        "sponsorship": "",
+        "date_posted": posted,
+        "source": "company board",
+    }
+
+
+def parse_iso(value):
+    if not value:
+        return 0
+    try:
+        text = str(value).replace("Z", "+00:00")
+        return int(datetime.fromisoformat(text).timestamp())
+    except Exception:
+        return 0
+
+
+def collect_boards():
+    """Poll Greenhouse + Ashby boards directly. Returns (listings, sources_ok)."""
+    found, ok = {}, 0
+
+    for token, display in GREENHOUSE_BOARDS.items():
+        data = fetch_json(
+            f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs", attempts=2)
+        if not isinstance(data, dict) or "jobs" not in data:
+            continue
+        ok += 1
+        for job in data["jobs"]:
+            item = board_listing(
+                company=display,
+                title=str(job.get("title") or "").strip(),
+                url=str(job.get("absolute_url") or "").strip(),
+                posted=parse_iso(job.get("updated_at")),
+                location=str((job.get("location") or {}).get("name") or "").strip(),
+            )
+            if item and item["url"]:
+                found[item["key"]] = item
+
+    for token, display in ASHBY_BOARDS.items():
+        data = fetch_json(
+            f"https://api.ashbyhq.com/posting-api/job-board/{token}", attempts=2)
+        if not isinstance(data, dict) or "jobs" not in data:
+            continue
+        ok += 1
+        for job in data["jobs"]:
+            item = board_listing(
+                company=display,
+                title=str(job.get("title") or "").strip(),
+                url=str(job.get("jobUrl") or "").strip(),
+                posted=parse_iso(job.get("publishedAt")),
+                location=str(job.get("location") or "").strip(),
+            )
+            if item and item["url"]:
+                found[item["key"]] = item
+
+    print(f"  - company boards: {ok}/{len(GREENHOUSE_BOARDS) + len(ASHBY_BOARDS)} "
+          f"reachable -> {len(found)} match filters")
+    return found, ok > 0
 
 
 def collect():
@@ -209,7 +353,14 @@ def collect():
             if prev is None or item["date_posted"] > prev["date_posted"]:
                 out[item["key"]] = item
         print(f"  - {src['name']}: {len(data)} listings -> {kept} match filters")
-    return out, any_ok
+
+    boards, boards_ok = collect_boards()
+    for key, item in boards.items():
+        # Aggregators and the boards share Greenhouse/Ashby URLs, so a repeat
+        # here is the same req — keep whichever copy we already had.
+        out.setdefault(key, item)
+
+    return out, (any_ok or boards_ok)
 
 
 # --------------------------------------------------------------------------
