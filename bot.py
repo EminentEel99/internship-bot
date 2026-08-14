@@ -125,6 +125,23 @@ NOT_UNDERGRAD = re.compile(
     re.I,
 )
 
+US_STATES = {
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID",
+    "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS",
+    "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK",
+    "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV",
+    "WI", "WY", "DC", "PR", "VI", "GU",
+}
+
+# Shorthand these feeds use instead of "City, ST".
+US_ALIASES = {
+    "nyc", "new york city", "sf", "san francisco", "bay area", "silicon valley",
+    "la", "los angeles", "dc", "washington dc", "seattle", "boston", "chicago",
+    "austin", "denver", "atlanta", "miami", "philadelphia", "san jose",
+    "mountain view", "palo alto", "menlo park", "sunnyvale", "santa clara",
+    "cupertino", "redmond", "bellevue", "pittsburgh", "ann arbor",
+}
+
 TARGET_TERM = "summer 2027"
 MAX_LISTINGS_PER_EMAIL = 60
 STATE_RETENTION_DAYS = 240
@@ -218,6 +235,41 @@ def is_for_current_undergrad(raw, title):
     return True
 
 
+def is_us_location(locations):
+    """True if any listed location is in the US.
+
+    Errs toward including: a listing with no location, or only a bare "Remote",
+    is kept rather than dropped, since a missed US role costs more than one
+    stray line in a digest. Anything that names a real non-US place — Bengaluru,
+    Toronto, Belgrade — has no US marker and gets cut.
+    """
+    if not locations:
+        return True
+
+    unknown_only = True
+    for loc in locations:
+        text = str(loc).strip()
+        if not text:
+            continue
+        low = text.lower()
+
+        if re.search(r"\b(united states|usa|u\.s\.a?\.?)\b", low):
+            return True
+        # "City, ST" or "City, ST 12345" — the state code is the tell.
+        for code in re.findall(r",\s*([A-Za-z]{2})\b", text):
+            if code.upper() in US_STATES:
+                return True
+        for part in re.split(r"[,/|]| - ", low):
+            if part.strip() in US_ALIASES:
+                return True
+
+        # A bare "Remote" tells us nothing; anything else names somewhere real.
+        if not re.fullmatch(r"(remote|hybrid|multiple locations|various)\s*", low):
+            unknown_only = False
+
+    return unknown_only
+
+
 def normalise(raw, source_name):
     if not raw.get("active") or not raw.get("is_visible", True):
         return None
@@ -236,6 +288,8 @@ def normalise(raw, source_name):
     locs = raw.get("locations") or []
     if isinstance(locs, str):
         locs = [locs]
+    if not is_us_location(locs):
+        return None
     return {
         "key": listing_key(company, title, url),
         "company": company,
@@ -265,6 +319,8 @@ def board_listing(company, title, url, posted, location):
         return None
     # Boards label off-cycle terms in the title; we only want the summer one.
     if re.search(r"\b(fall|winter|spring|autumn)\b", title, re.I):
+        return None
+    if not is_us_location([location] if location else []):
         return None
     return {
         "key": listing_key(company, title, url),
