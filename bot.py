@@ -188,6 +188,12 @@ NOTABLE_COMPANIES = [
 ]
 
 TARGET_TERM = "summer 2027"
+
+# Summer 2027 recruiting opens around mid-2026. A listing that only *implies*
+# its cycle — a bare season, or no term tag at all — and was posted before this
+# is from the previous cycle, not this one. An explicit "Summer 2027" tag is
+# trusted whatever the date. Cutoff: 2026-06-01.
+CYCLE_START = 1780272000
 MAX_LISTINGS_PER_EMAIL = 60
 # One email per listing, so nothing hides inside a digest. Above this many in a
 # single run the postings clearly went up as one drop, and separate emails would
@@ -232,6 +238,21 @@ def listing_key(company, title, url):
     return f"{company.strip().lower()}|{title.strip().lower()}"
 
 
+def has_wrong_year(title, url):
+    """True when the posting itself names an earlier cycle.
+
+    Both feeds carry stale entries whose tags claim 2027 while the underlying
+    req is 2026 — an Amazon role reached the inbox that way, tagged season
+    "Summer" but sitting at a URL ending `-intern-co-op-2026`. The posting's
+    own text outranks the aggregator's tag. \\b keeps this off numeric job ids,
+    since digits are word characters.
+    """
+    haystack = f"{title} {url}"
+    if re.search(r"\b(2023|2024|2025|2026)\b", haystack):
+        return "2027" not in haystack
+    return False
+
+
 def is_summer_2027(raw, title):
     """Simplify uses a `terms` list; vanshb03 uses a bare `season` string.
 
@@ -244,16 +265,20 @@ def is_summer_2027(raw, title):
     if any(t == TARGET_TERM for t in terms):
         return True
 
+    haystack = f"{title} {raw.get('url') or ''}".lower()
+    explicit_2027 = "2027" in haystack
+    recent = int(raw.get("date_posted") or 0) >= CYCLE_START
+
     season = str(raw.get("season") or "").strip().lower()
     if season:
-        # vanshb03's repo is scoped to the 2027 cycle: bare "Summer" means 2027.
-        return season == "summer"
+        # The repo name implies 2027, but it still carries un-pruned 2026 reqs
+        # (21 of them posted back in April). Trust a bare "Summer" only if the
+        # posting is recent enough to belong to this cycle, or says 2027.
+        return season == "summer" and (explicit_2027 or recent)
 
     untagged = not terms or all(t in ("n/a", "", "none") for t in terms)
     if untagged:
-        haystack = f"{title} {raw.get('url') or ''}".lower()
-        if "2027" in haystack and not re.search(r"\b(2026|2028)\b", title):
-            return True
+        return explicit_2027 and not re.search(r"\b(2026|2028)\b", title)
     return False
 
 
@@ -327,6 +352,8 @@ def normalise(raw, source_name):
     url = str(raw.get("url") or "").strip()
     if not title or not company or not url:
         return None
+    if has_wrong_year(title, url):
+        return None
     if not is_summer_2027(raw, title):
         return None
     if not is_swe(raw, title):
@@ -364,7 +391,7 @@ def board_listing(company, title, url, posted, location):
         return None
     if TITLE_EXCLUDE.search(title) or not TITLE_INCLUDE.search(title):
         return None
-    if re.search(r"\b(2026|2028|2029)\b", title):
+    if re.search(r"\b(2028|2029)\b", title) or has_wrong_year(title, url):
         return None
     # Boards label off-cycle terms in the title; we only want the summer one.
     if re.search(r"\b(fall|winter|spring|autumn)\b", title, re.I):
