@@ -125,6 +125,13 @@ NOT_UNDERGRAD = re.compile(
     re.I,
 )
 
+# Handled separately from NOT_UNDERGRAD: plenty of reqs read "Bachelor's or
+# Master's", which are open to you. Only reject when Master's stands alone.
+# The apostrophe is optional but the trailing s is not, so "Master Data
+# Management Intern" is unaffected.
+MASTERS_ONLY = re.compile(r"\b(master'?s|ms\s*/\s*phd|graduate student)\b", re.I)
+MENTIONS_BACHELORS = re.compile(r"\b(bachelor'?s|undergrad|\bbs\b|\bba\b)\b", re.I)
+
 US_STATES = {
     "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID",
     "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS",
@@ -303,8 +310,16 @@ def is_for_current_undergrad(raw, title):
         return False
     if NOT_UNDERGRAD.search(title):
         return False
+
     degrees = [str(x).strip().lower() for x in (raw.get("degrees") or [])]
-    if degrees and not any("bachelor" in d for d in degrees):
+    if degrees:
+        # Simplify populates this and it is authoritative — trust it over the
+        # title, which is how "Bachelor's or Master's" reqs stay in.
+        return any("bachelor" in d for d in degrees)
+
+    # vanshb03 and the company boards carry no degree data, so the title is all
+    # we have. An Apple "Software Engineering Intern, Masters" got through here.
+    if MASTERS_ONLY.search(title) and not MENTIONS_BACHELORS.search(title):
         return False
     return True
 
